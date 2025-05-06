@@ -20,10 +20,59 @@ send_email() {
     ) | /usr/sbin/sendmail "$3"
 }
 
-get_active_keys() {
-    awk -F":" '{print $1 ":" $2}' "$ALERTS_FILE"
+send_summary() {
+    date_today=$(date '+%Y-%m-%d')
+    summary_sent_flag="/opt/oracle/scripts/gg_monitoring/summary_sent_$date_today"
+
+    # If called manually, skip flag check
+    if [[ "$1" != "manual" && -f "$summary_sent_flag" ]]; then return; fi
+
+    active_count=$(wc -l < "$ALERTS_FILE")
+    echo "$date_today:$active_count" >> "$HISTORY_FILE"
+
+    html="<html><b>GoldenGate Monitoring Summary - $date_today</b><br><br>
+    <table border=1 cellpadding=4 cellspacing=0>
+    <tr><th>Date</th><th>Alert Count</th><th>Graph</th></tr>"
+
+    max_count=$(awk -F: 'BEGIN{max=0} {if($2>max) max=$2} END{print max}' "$HISTORY_FILE")
+    [[ "$max_count" -eq 0 ]] && max_count=1
+
+    while read -r history_line; do
+        h_date=$(echo "$history_line" | cut -d: -f1)
+        h_count=$(echo "$history_line" | cut -d: -f2)
+        bar_len=$(( (h_count * 20) / max_count ))
+        bar=""
+        for ((i=0; i<bar_len; i++)); do bar="${bar}▇"; done
+        html+="<tr><td>$h_date</td><td>$h_count</td><td>$bar</td></tr>"
+    done < <(tail -7 "$HISTORY_FILE")
+
+    html+="</table><br><p>Active Alerts:</p><ul>"
+
+    while read -r alert_line; do
+        a_key=$(echo "$alert_line" | cut -d: -f1,2)
+        severity=$(echo "$alert_line" | cut -d: -f3)
+        process=$(echo "$a_key" | cut -d: -f2)
+        ogg_home=$(echo "$a_key" | cut -d: -f1)
+        db=$(awk -v home="$ogg_home" '$1==home {print $3}' "$CONFIG_FILE")
+        html+="<li>$severity - $db - $process - $HOSTNAME</li>"
+    done < "$ALERTS_FILE"
+
+    html+="</ul></html>"
+
+    send_email "GoldenGate Monitoring Summary - $date_today" "$html" "$EMAIL_RECIPIENT"
+
+    if [[ "$1" != "manual" ]]; then
+        touch "$summary_sent_flag"
+    fi
 }
 
+# If 'summary' passed as argument, only send summary
+if [[ "$1" == "summary" ]]; then
+    send_summary manual
+    exit 0
+fi
+
+# --- normal monitoring ---
 date_today=$(date '+%Y-%m-%d')
 current_alert_keys=()
 
@@ -71,7 +120,7 @@ done < "$CONFIG_FILE"
 
 # Clear resolved alerts
 temp_file=$(mktemp)
-for line in $(get_active_keys); do
+for line in $(awk -F":" '{print $1 ":" $2}' "$ALERTS_FILE"); do
     found=false
     for key in "${current_alert_keys[@]}"; do
         if [[ "$line" == "$key" ]]; then found=true; break; fi
@@ -82,43 +131,8 @@ for line in $(get_active_keys); do
 done
 mv "$temp_file" "$ALERTS_FILE"
 
-# Daily summary at 4 PM
+# Auto send summary at 4 PM
 hour=$(date +%H)
-summary_sent_flag="/opt/oracle/scripts/gg_monitoring/summary_sent_$date_today"
-
-if [[ "$hour" -eq 16 && ! -f "$summary_sent_flag" ]]; then
-    active_count=$(wc -l < "$ALERTS_FILE")
-    echo "$date_today:$active_count" >> "$HISTORY_FILE"
-
-    html="<html><b>GoldenGate Monitoring Summary - $date_today</b><br><br>
-    <table border=1 cellpadding=4 cellspacing=0>
-    <tr><th>Date</th><th>Alert Count</th><th>Graph</th></tr>"
-
-    max_count=$(awk -F: 'BEGIN{max=0} {if($2>max) max=$2} END{print max}' "$HISTORY_FILE")
-    [[ "$max_count" -eq 0 ]] && max_count=1
-
-    while read -r history_line; do
-        h_date=$(echo "$history_line" | cut -d: -f1)
-        h_count=$(echo "$history_line" | cut -d: -f2)
-        bar_len=$(( (h_count * 20) / max_count ))
-        bar=""
-        for ((i=0; i<bar_len; i++)); do bar="${bar}▇"; done
-        html+="<tr><td>$h_date</td><td>$h_count</td><td>$bar</td></tr>"
-    done < <(tail -7 "$HISTORY_FILE")
-
-    html+="</table><br><p>Active Alerts:</p><ul>"
-
-    while read -r alert_line; do
-        a_key=$(echo "$alert_line" | cut -d: -f1,2)
-        severity=$(echo "$alert_line" | cut -d: -f3)
-        process=$(echo "$a_key" | cut -d: -f2)
-        ogg_home=$(echo "$a_key" | cut -d: -f1)
-        db=$(awk -v home="$ogg_home" '$1==home {print $3}' "$CONFIG_FILE")
-        html+="<li>$severity - $db - $process - $HOSTNAME</li>"
-    done < "$ALERTS_FILE"
-
-    html+="</ul></html>"
-
-    send_email "GoldenGate Monitoring Summary - $date_today" "$html" "$EMAIL_RECIPIENT"
-    touch "$summary_sent_flag"
+if [[ "$hour" -eq 16 ]]; then
+    send_summary
 fi

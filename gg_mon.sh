@@ -77,7 +77,7 @@ def read_previous_state(gg_home, debug):
             debug_print(debug, f"Previous state for {gg_home}: {state}")
             return state
     debug_print(debug, f"First run detected for {gg_home} (no state file)")
-    return None  # Return None to indicate first run
+    return None
 
 def write_state(gg_home, status, debug):
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -114,7 +114,24 @@ def main():
             if status != "RUNNING" or lag_secs > LAG_THRESHOLD_SECONDS:
                 alerts.append(f"{proc_type:<11}{status:<9}{name:<8}{lag:<16}{since:<}")
 
-        if alerts and (previous_state in ("OK", "UNKNOWN") or previous_state is None):
+        current_state = "ALERT" if alerts else "OK"
+
+        if previous_state is None:
+            debug_print(debug, f"First run: writing initial state '{current_state}' for {gg_home}")
+            if alerts:
+                body = (
+                    f"ALERT: Issues detected on {db_name} @ {host}\n\n"
+                    f"{header}\n{divider}\n" + "\n".join(alerts)
+                )
+                subject = f"GG ALERT: {db_name} on {host}"
+                send_email(email, subject, body, debug)
+            else:
+                body = f"Initial check OK: All GoldenGate processes are healthy on {db_name} @ {host}."
+                subject = f"GG OK (Initial): {db_name} on {host}"
+                send_email(email, subject, body, debug)
+            write_state(gg_home, current_state, debug)
+
+        elif alerts and previous_state in ("OK", "UNKNOWN"):
             body = (
                 f"ALERT: Issues detected on {db_name} @ {host}\n\n"
                 f"{header}\n{divider}\n" + "\n".join(alerts)
@@ -130,7 +147,7 @@ def main():
             write_state(gg_home, "OK", debug)
 
         else:
-            debug_print(debug, f"No state change for {db_name}.")
+            debug_print(debug, f"No state change for {db_name}. Current: {current_state}, Previous: {previous_state}")
 
 if __name__ == "__main__":
     main()

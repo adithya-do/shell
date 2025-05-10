@@ -1,6 +1,7 @@
 import subprocess
 import os
 import socket
+import re
 
 # Constants
 CONFIG_FILE = "/opt/oracle/scripts/ogg_mon/ogg_config.txt"
@@ -26,36 +27,28 @@ def time_str_to_seconds(time_str):
         return 0
 
 def parse_status_and_lag(gg_home):
-    status_output = run_ggsci(gg_home, "info all")
-    lag_output = run_ggsci(gg_home, "lag extract *\nlag replicat *")
-
+    output = run_ggsci(gg_home, "info all")
     processes = {}
 
-    # Parse status
-    for line in status_output.splitlines():
-        if line.strip().startswith(("EXTRACT", "REPLICAT")):
-            parts = line.split()
-            if len(parts) >= 3:
-                proc_type, name, status = parts[:3]
-                key = f"{proc_type} {name}"
-                processes[key] = {"status": status}
-
-    # Parse lag with block-based parsing
-    current_proc = None
-    for line in lag_output.splitlines():
+    for line in output.splitlines():
         line = line.strip()
         if line.startswith(("EXTRACT", "REPLICAT")):
             parts = line.split()
-            if len(parts) >= 2:
-                current_proc = f"{parts[0]} {parts[1]}"
-                if current_proc not in processes:
-                    processes[current_proc] = {}
-        elif "Lag at Chkpt" in line and current_proc:
-            lag_time = line.split(":", 1)[1].strip()
-            processes[current_proc]["lag"] = lag_time
-        elif "Time Since Chkpt" in line and current_proc:
-            time_since = line.split(":", 1)[1].strip()
-            processes[current_proc]["time_since"] = time_since
+            if len(parts) < 6:
+                continue
+
+            proc_type = parts[0]
+            name = parts[1]
+            status = parts[2]
+            lag = parts[-2]
+            time_since = parts[-1]
+
+            key = f"{proc_type} {name}"
+            processes[key] = {
+                "status": status,
+                "lag": lag,
+                "time_since": time_since
+            }
 
     return processes
 

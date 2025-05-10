@@ -40,18 +40,22 @@ def parse_status_and_lag(gg_home):
                 key = f"{proc_type} {name}"
                 processes[key] = {"status": status}
 
-    # Parse lag
+    # Parse lag with block-based parsing
     current_proc = None
     for line in lag_output.splitlines():
         line = line.strip()
         if line.startswith(("EXTRACT", "REPLICAT")):
-            current_proc = " ".join(line.split()[:2])
-            if current_proc not in processes:
-                processes[current_proc] = {}
+            parts = line.split()
+            if len(parts) >= 2:
+                current_proc = f"{parts[0]} {parts[1]}"
+                if current_proc not in processes:
+                    processes[current_proc] = {}
         elif "Lag at Chkpt" in line and current_proc:
-            processes[current_proc]["lag"] = line.split(":", 1)[1].strip()
+            lag_time = line.split(":", 1)[1].strip()
+            processes[current_proc]["lag"] = lag_time
         elif "Time Since Chkpt" in line and current_proc:
-            processes[current_proc]["time_since"] = line.split(":", 1)[1].strip()
+            time_since = line.split(":", 1)[1].strip()
+            processes[current_proc]["time_since"] = time_since
 
     return processes
 

@@ -2,7 +2,7 @@ import subprocess
 import os
 import socket
 
-# Set config and state paths
+# Constants
 CONFIG_FILE = "/opt/oracle/scripts/ogg_mon/ogg_config.txt"
 STATE_DIR = "/opt/oracle/scripts/ogg_mon/state"
 LAG_THRESHOLD_SECONDS = 300  # 5 minutes
@@ -31,7 +31,7 @@ def parse_status_and_lag(gg_home):
 
     processes = {}
 
-    # Parse process statuses
+    # Parse status
     for line in status_output.splitlines():
         if line.strip().startswith(("EXTRACT", "REPLICAT")):
             parts = line.split()
@@ -40,7 +40,7 @@ def parse_status_and_lag(gg_home):
                 key = f"{proc_type} {name}"
                 processes[key] = {"status": status}
 
-    # Parse lag details
+    # Parse lag
     current_proc = None
     for line in lag_output.splitlines():
         line = line.strip()
@@ -56,10 +56,8 @@ def parse_status_and_lag(gg_home):
     return processes
 
 def send_email(to_email, subject, body):
-    message = f"Subject: {subject}\nTo: {to_email}\n\n{body}"
-    sendmail_path = "/usr/sbin/sendmail"
-    process = subprocess.Popen([sendmail_path, to_email], stdin=subprocess.PIPE)
-    process.communicate(message.encode("utf-8"))
+    mail_cmd = f'echo "{body}" | mailx -s "{subject}" {to_email}'
+    subprocess.run(mail_cmd, shell=True)
 
 def get_state_file_path(gg_home):
     os.makedirs(STATE_DIR, exist_ok=True)

@@ -66,21 +66,25 @@ def send_email(to_email, subject, body, debug):
     subprocess.run(mail_cmd, shell=True)
 
 def get_state_file_path(gg_home):
-    os.makedirs(STATE_DIR, exist_ok=True)
     safe_name = gg_home.replace("/", "_").strip("_")
     return os.path.join(STATE_DIR, f"{safe_name}.state")
 
-def read_previous_state(gg_home):
+def read_previous_state(gg_home, debug):
     path = get_state_file_path(gg_home)
     if os.path.exists(path):
         with open(path) as f:
-            return f.read().strip()
-    return "OK"
+            state = f.read().strip()
+            debug_print(debug, f"Previous state for {gg_home}: {state}")
+            return state
+    debug_print(debug, f"No previous state file for {gg_home}, defaulting to UNKNOWN")
+    return "UNKNOWN"
 
-def write_state(gg_home, status):
+def write_state(gg_home, status, debug):
+    os.makedirs(STATE_DIR, exist_ok=True)
     path = get_state_file_path(gg_home)
     with open(path, "w") as f:
         f.write(status)
+    debug_print(debug, f"Wrote state '{status}' to {path}")
 
 def main():
     parser = argparse.ArgumentParser(description="GoldenGate Monitoring Script")
@@ -94,7 +98,7 @@ def main():
     for gg_home, db_name, email in configs:
         debug_print(debug, f"Checking GoldenGate at {gg_home} for {db_name}")
         processes = parse_status_and_lag(gg_home, debug)
-        previous_state = read_previous_state(gg_home)
+        previous_state = read_previous_state(gg_home, debug)
 
         alerts = []
         header = "Program     Status   Group    Lag at Chkpt    Time Since Chkpt"
@@ -110,20 +114,20 @@ def main():
             if status != "RUNNING" or lag_secs > LAG_THRESHOLD_SECONDS:
                 alerts.append(f"{proc_type:<11}{status:<9}{name:<8}{lag:<16}{since:<}")
 
-        if alerts and previous_state == "OK":
+        if alerts and previous_state in ("OK", "UNKNOWN"):
             body = (
                 f"ALERT: Issues detected on {db_name} @ {host}\n\n"
                 f"{header}\n{divider}\n" + "\n".join(alerts)
             )
             subject = f"GG ALERT: {db_name} on {host}"
             send_email(email, subject, body, debug)
-            write_state(gg_home, "ALERT")
+            write_state(gg_home, "ALERT", debug)
 
         elif not alerts and previous_state == "ALERT":
             body = f"CLEAR: All GoldenGate processes are healthy on {db_name} @ {host}."
             subject = f"GG CLEAR: {db_name} on {host}"
             send_email(email, subject, body, debug)
-            write_state(gg_home, "OK")
+            write_state(gg_home, "OK", debug)
 
         else:
             debug_print(debug, f"No state change for {db_name}.")

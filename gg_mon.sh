@@ -1,100 +1,123 @@
-#!/bin/bash
+import subprocess
+import os
+import socket
 
-CONFIG_FILE="/opt/oracle/scripts/gg_monitoring/ogg_homes.txt"
-EMAIL_RECIPIENT="abc@abc.com"
-HTML_REPORT="/opt/oracle/scripts/gg_monitoring/gg_summary_report.html"
-HOSTNAME=$(hostname)
+# Set config and state paths
+CONFIG_FILE = "/opt/oracle/scripts/ogg_mon/ogg_config.txt"
+STATE_DIR = "/opt/oracle/scripts/ogg_mon/state"
+LAG_THRESHOLD_SECONDS = 300  # 5 minutes
 
-send_email() {
-    subject="$1"
-    htmlfile="$2"
-    (
-        echo "Subject: $subject"
-        echo "Content-Type: text/html"
-        echo
-        cat "$htmlfile"
-    ) | /usr/sbin/sendmail "$EMAIL_RECIPIENT"
-}
+def read_config():
+    with open(CONFIG_FILE) as f:
+        lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    return [tuple(line.split("|")) for line in lines]
 
-parse_lag_seconds() {
-    lag_str="$1"
-    IFS=':' read -r h m s <<< "$lag_str"
-    [[ -z "$s" ]] && s=0
-    [[ -z "$m" ]] && m=0
-    [[ -z "$h" ]] && h=0
-    echo $(( 10#$h * 3600 + 10#$m * 60 + 10#$s ))
-}
+def run_ggsci(gg_home, command):
+    ggsci = f"{gg_home}/ggsci"
+    full_cmd = f"echo '{command}' | {ggsci}"
+    result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True)
+    return result.stdout
 
-generate_report() {
-    date_today=$(date '+%Y-%m-%d')
-    {
-        echo "<html><b>GoldenGate Monitoring Summary - $date_today (Host: $HOSTNAME)</b><br><br>"
-        echo "<table border=1 cellpadding=4 cellspacing=0>"
-        echo "<tr>
-            <th>GoldenGate Home</th>
-            <th>Database</th>
-            <th>Total Processes</th>
-            <th>Running</th>
-            <th>Stopped</th>
-            <th>Abended</th>
-            <th>Lag &gt;30 min</th>
-        </tr>"
+def time_str_to_seconds(time_str):
+    try:
+        h, m, s = map(int, time_str.strip().split(":"))
+        return h * 3600 + m * 60 + s
+    except:
+        return 0
 
-        while read -r ogg_home contact db; do
-            [[ -z "$ogg_home" || -z "$db" ]] && continue
+def parse_status_and_lag(gg_home):
+    status_output = run_ggsci(gg_home, "info all")
+    lag_output = run_ggsci(gg_home, "lag extract *\nlag replicat *")
 
-            cd "$ogg_home" || continue
-            output=$(echo "info all" | ./ggsci 2>/dev/null)
+    processes = {}
 
-            total=0
-            running=0
-            stopped=0
-            abended=0
-            lagover=0
+    # Parse process statuses
+    for line in status_output.splitlines():
+        if line.strip().startswith(("EXTRACT", "REPLICAT")):
+            parts = line.split()
+            if len(parts) >= 3:
+                proc_type, name, status = parts[:3]
+                key = f"{proc_type} {name}"
+                processes[key] = {"status": status}
 
-            while read -r line; do
-                proc_type=$(echo "$line" | awk '{print $1}')
-                proc_name=$(echo "$line" | awk '{print $2}')
-                proc_status=$(echo "$line" | awk '{print $3}')
+    # Parse lag details
+    current_proc = None
+    for line in lag_output.splitlines():
+        line = line.strip()
+        if line.startswith(("EXTRACT", "REPLICAT")):
+            current_proc = " ".join(line.split()[:2])
+            if current_proc not in processes:
+                processes[current_proc] = {}
+        elif "Lag at Chkpt" in line and current_proc:
+            processes[current_proc]["lag"] = line.split(":", 1)[1].strip()
+        elif "Time Since Chkpt" in line and current_proc:
+            processes[current_proc]["time_since"] = line.split(":", 1)[1].strip()
 
-                if [[ "$proc_type" =~ (MANAGER|EXTRACT|REPLICAT) ]]; then
-                    total=$((total+1))
-                    case "$proc_status" in
-                        RUNNING) running=$((running+1)) ;;
-                        STOPPED) stopped=$((stopped+1)) ;;
-                        ABENDED) abended=$((abended+1)) ;;
-                        *) ;;
-                    esac
+    return processes
 
-                    if [[ "$proc_type" == "EXTRACT" || "$proc_type" == "REPLICAT" ]]; then
-                        lag_output=$(echo "lag $proc_name" | ./ggsci 2>/dev/null | grep "Lag at")
-                        lag_time=$(echo "$lag_output" | sed -n 's/.*Lag at Chkpt //p' | awk '{print $1}')
-                        
-                        if [[ -n "$lag_time" ]]; then
-                            lag_sec=$(parse_lag_seconds "$lag_time")
-                            if [[ $lag_sec -gt 1800 ]]; then
-                                lagover=$((lagover+1))
-                            fi
-                        fi
-                    fi
-                fi
-            done <<< "$(echo "$output" | grep -E 'MANAGER|EXTRACT|REPLICAT')"
+def send_email(to_email, subject, body):
+    message = f"Subject: {subject}\nTo: {to_email}\n\n{body}"
+    sendmail_path = "/usr/sbin/sendmail"
+    process = subprocess.Popen([sendmail_path, to_email], stdin=subprocess.PIPE)
+    process.communicate(message.encode("utf-8"))
 
-            echo "<tr>
-                <td>$ogg_home</td>
-                <td>$db</td>
-                <td>$total</td>
-                <td>$running</td>
-                <td>$stopped</td>
-                <td>$abended</td>
-                <td>$lagover</td>
-            </tr>"
-        done < "$CONFIG_FILE"
+def get_state_file_path(gg_home):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    safe_name = gg_home.replace("/", "_").strip("_")
+    return os.path.join(STATE_DIR, f"{safe_name}.state")
 
-        echo "</table></html>"
-    } > "$HTML_REPORT"
-}
+def read_previous_state(gg_home):
+    path = get_state_file_path(gg_home)
+    if os.path.exists(path):
+        with open(path) as f:
+            return f.read().strip()
+    return "OK"
 
-# MAIN
-generate_report
-send_email "GoldenGate Summary - $(date '+%Y-%m-%d')" "$HTML_REPORT"
+def write_state(gg_home, status):
+    path = get_state_file_path(gg_home)
+    with open(path, "w") as f:
+        f.write(status)
+
+def main():
+    host = socket.gethostname()
+    configs = read_config()
+
+    for gg_home, db_name, email in configs:
+        print(f"Checking GoldenGate at {gg_home} for {db_name}")
+        processes = parse_status_and_lag(gg_home)
+        previous_state = read_previous_state(gg_home)
+
+        alerts = []
+        header = "Program     Status   Group    Lag at Chkpt    Time Since Chkpt"
+        divider = "-" * len(header)
+
+        for proc, info in processes.items():
+            proc_type, name = proc.split()
+            status = info.get("status", "UNKNOWN")
+            lag = info.get("lag", "N/A")
+            since = info.get("time_since", "N/A")
+
+            lag_secs = time_str_to_seconds(since)
+            if status != "RUNNING" or lag_secs > LAG_THRESHOLD_SECONDS:
+                alerts.append(f"{proc_type:<11}{status:<9}{name:<8}{lag:<16}{since:<}")
+
+        if alerts and previous_state == "OK":
+            body = (
+                f"ALERT: Issues detected on {db_name} @ {host}\n\n"
+                f"{header}\n{divider}\n" + "\n".join(alerts)
+            )
+            subject = f"GG ALERT: {db_name} on {host}"
+            send_email(email, subject, body)
+            write_state(gg_home, "ALERT")
+
+        elif not alerts and previous_state == "ALERT":
+            body = f"CLEAR: All GoldenGate processes are healthy on {db_name} @ {host}."
+            subject = f"GG CLEAR: {db_name} on {host}"
+            send_email(email, subject, body)
+            write_state(gg_home, "OK")
+
+        else:
+            print(f"No state change for {db_name}.")
+
+if __name__ == "__main__":
+    main()

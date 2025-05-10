@@ -2,21 +2,28 @@ import subprocess
 import os
 import socket
 import re
+import argparse
 
 # Constants
 CONFIG_FILE = "/opt/oracle/scripts/ogg_mon/ogg_config.txt"
 STATE_DIR = "/opt/oracle/scripts/ogg_mon/state"
 LAG_THRESHOLD_SECONDS = 300  # 5 minutes
 
-def read_config():
+def debug_print(debug, message):
+    if debug:
+        print(f"[DEBUG] {message}")
+
+def read_config(debug):
     with open(CONFIG_FILE) as f:
         lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    debug_print(debug, f"Read config lines: {lines}")
     return [tuple(line.split("|")) for line in lines]
 
-def run_ggsci(gg_home, command):
+def run_ggsci(gg_home, command, debug):
     ggsci = f"{gg_home}/ggsci"
     full_cmd = f"echo '{command}' | {ggsci}"
     result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True)
+    debug_print(debug, f"Running GGSCI Command: {full_cmd}\nOutput:\n{result.stdout}")
     return result.stdout
 
 def time_str_to_seconds(time_str):
@@ -26,8 +33,8 @@ def time_str_to_seconds(time_str):
     except:
         return 0
 
-def parse_status_and_lag(gg_home):
-    output = run_ggsci(gg_home, "info all")
+def parse_status_and_lag(gg_home, debug):
+    output = run_ggsci(gg_home, "info all", debug)
     processes = {}
 
     for line in output.splitlines():
@@ -50,10 +57,12 @@ def parse_status_and_lag(gg_home):
                 "time_since": time_since
             }
 
+    debug_print(debug, f"Parsed processes: {processes}")
     return processes
 
-def send_email(to_email, subject, body):
+def send_email(to_email, subject, body, debug):
     mail_cmd = f'echo "{body}" | mailx -s "{subject}" {to_email}'
+    debug_print(debug, f"Sending email with command: {mail_cmd}")
     subprocess.run(mail_cmd, shell=True)
 
 def get_state_file_path(gg_home):
@@ -74,12 +83,17 @@ def write_state(gg_home, status):
         f.write(status)
 
 def main():
+    parser = argparse.ArgumentParser(description="GoldenGate Monitoring Script")
+    parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    args = parser.parse_args()
+    debug = args.debug
+
     host = socket.gethostname()
-    configs = read_config()
+    configs = read_config(debug)
 
     for gg_home, db_name, email in configs:
-        print(f"Checking GoldenGate at {gg_home} for {db_name}")
-        processes = parse_status_and_lag(gg_home)
+        debug_print(debug, f"Checking GoldenGate at {gg_home} for {db_name}")
+        processes = parse_status_and_lag(gg_home, debug)
         previous_state = read_previous_state(gg_home)
 
         alerts = []
@@ -102,17 +116,17 @@ def main():
                 f"{header}\n{divider}\n" + "\n".join(alerts)
             )
             subject = f"GG ALERT: {db_name} on {host}"
-            send_email(email, subject, body)
+            send_email(email, subject, body, debug)
             write_state(gg_home, "ALERT")
 
         elif not alerts and previous_state == "ALERT":
             body = f"CLEAR: All GoldenGate processes are healthy on {db_name} @ {host}."
             subject = f"GG CLEAR: {db_name} on {host}"
-            send_email(email, subject, body)
+            send_email(email, subject, body, debug)
             write_state(gg_home, "OK")
 
         else:
-            print(f"No state change for {db_name}.")
+            debug_print(debug, f"No state change for {db_name}.")
 
 if __name__ == "__main__":
     main()

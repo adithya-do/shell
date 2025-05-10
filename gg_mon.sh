@@ -76,8 +76,8 @@ def read_previous_state(gg_home, debug):
             state = f.read().strip()
             debug_print(debug, f"Previous state for {gg_home}: {state}")
             return state
-    debug_print(debug, f"No previous state file for {gg_home}, defaulting to UNKNOWN")
-    return "UNKNOWN"
+    debug_print(debug, f"First run detected for {gg_home} (no state file)")
+    return None  # Return None to indicate first run
 
 def write_state(gg_home, status, debug):
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -114,7 +114,7 @@ def main():
             if status != "RUNNING" or lag_secs > LAG_THRESHOLD_SECONDS:
                 alerts.append(f"{proc_type:<11}{status:<9}{name:<8}{lag:<16}{since:<}")
 
-        if alerts and previous_state in ("OK", "UNKNOWN"):
+        if alerts and (previous_state in ("OK", "UNKNOWN") or previous_state is None):
             body = (
                 f"ALERT: Issues detected on {db_name} @ {host}\n\n"
                 f"{header}\n{divider}\n" + "\n".join(alerts)

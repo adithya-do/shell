@@ -90,19 +90,17 @@ done < "$CONF_FILE"
 echo "</table></body></html>" >> "$TMP_HTML"
 
 # Send email to all recipients
-for EMAIL in "${!RECIPIENTS[@]}"; do
-  {
-    echo "To: $EMAIL"
-    echo "Subject: $MAIL_SUBJECT"
-    echo "MIME-Version: 1.0"
-    echo "Content-Type: text/html"
-    echo "From: $MAIL_FROM"
-    echo ""
-    cat "$TMP_HTML"
-  } > "$TMP_MAIL"
-
-  /usr/sbin/sendmail -t < "$TMP_MAIL"
-done
+TO_LIST=$(IFS=','; echo "${!RECIPIENTS[*]}")
+{
+  echo "To: $TO_LIST"
+  echo "Subject: $MAIL_SUBJECT"
+  echo "MIME-Version: 1.0"
+  echo "Content-Type: text/html"
+  echo "From: $MAIL_FROM"
+  echo ""
+  cat "$TMP_HTML"
+} > "$TMP_MAIL"
+/usr/sbin/sendmail -t < "$TMP_MAIL"
 
 # Cleanup
 rm -f "$TMP_HTML" "$TMP_MAIL"

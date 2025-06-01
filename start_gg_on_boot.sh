@@ -68,12 +68,13 @@ EOF
   # Check if all processes are running
   ALL_STARTED=true
 
-  echo "$INFO_ALL" | awk 'NR > 2 && ($1 == "EXTRACT" || $1 == "REPLICAT")' | while read -r LINE; do
-    STATUS=$(echo "$LINE" | awk '{print $2}')
-    if [[ "$STATUS" != "RUNNING" ]]; then
-      ALL_STARTED=false
-    fi
-  done
+  # Check if any process is STOPPED or ABENDED
+if echo "$INFO_ALL" | awk 'NR > 2 && ($1 == "EXTRACT" || $1 == "REPLICAT")' | grep -E 'STOPPED|ABENDED' > /dev/null; then
+  PROCESS_STATUS="<td class='fail'>Not All Started</td>"
+else
+  PROCESS_STATUS="<td class='ok'>All Started</td>"
+fi
+
 
   # Determine status
   if $ALL_STARTED; then

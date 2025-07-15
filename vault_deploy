@@ -1,0 +1,109 @@
+#!/bin/bash
+
+# === Configuration ===
+ORACLE_SID=ORCL                   # SID of the instance
+DB_UNIQUE_NAME=orcl               # Change to your DB_UNIQUE_NAME (used in srvctl)
+ORACLE_HOME=/u01/app/oracle/product/19.0.0/dbhome_1
+PATH=$ORACLE_HOME/bin:$PATH
+LOGFILE=/tmp/enable_dv_$(date +%F_%T).log
+
+export ORACLE_SID ORACLE_HOME PATH
+
+echo "=== Starting Oracle Database Vault Enablement ===" | tee $LOGFILE
+echo "Log File: $LOGFILE"
+
+# === Step 1: Check if DV is already enabled ===
+echo "Checking if Database Vault is already enabled..." | tee -a $LOGFILE
+
+sqlplus -s / as sysdba >> $LOGFILE <<EOF
+SET PAGES 0 FEEDBACK OFF
+SELECT 'DV_STATUS=' || VALUE FROM V\$OPTION WHERE PARAMETER = 'Oracle Database Vault';
+EXIT;
+EOF
+
+if grep -q "DV_STATUS=TRUE" "$LOGFILE"; then
+    echo "Database Vault is already enabled. Exiting." | tee -a $LOGFILE
+    exit 0
+fi
+
+# === Step 2: Enable DV schemas ===
+echo "Enabling DV schemas using catdv.sql..." | tee -a $LOGFILE
+
+sqlplus -s / as sysdba >> $LOGFILE <<EOF
+STARTUP RESTRICT;
+@?/rdbms/admin/catdv.sql
+EXIT;
+EOF
+
+if ! grep -q "Package created\|Synonym created\|User created" "$LOGFILE"; then
+    echo "catdv.sql execution may have failed. Check the log." | tee -a $LOGFILE
+    exit 1
+fi
+
+# === Step 3: Confirm DV users exist ===
+echo "Validating DVSYS and DVF user creation..." | tee -a $LOGFILE
+
+sqlplus -s / as sysdba >> $LOGFILE <<EOF
+SET LINES 100 PAGES 0 FEEDBACK OFF
+SELECT username, account_status FROM dba_users WHERE username IN ('DVSYS', 'DVF');
+EXIT;
+EOF
+
+if ! grep -q "DVSYS" "$LOGFILE" || ! grep -q "DVF" "$LOGFILE"; then
+    echo "DVSYS or DVF user not found. Aborting." | tee -a $LOGFILE
+    exit 1
+fi
+
+# === Step 4: Run DVCA to enable DV ===
+echo "Running dvca utility..." | tee -a $LOGFILE
+
+DV_OWNER=dvowner
+DV_OWNER_PWD=Welcome123
+DV_ACCTMGR=dvacctmgr
+DV_ACCTMGR_PWD=Welcome123
+
+$ORACLE_HOME/bin/dvca -action enable \
+  -oh $ORACLE_HOME \
+  -service $ORACLE_SID \
+  -instance $ORACLE_SID \
+  -dvowner $DV_OWNER -dvownerpwd $DV_OWNER_PWD \
+  -accountmanager $DV_ACCTMGR -accountmanagerpwd $DV_ACCTMGR_PWD \
+  -logfile $LOGFILE
+
+if ! grep -qi "DV Configuration complete" "$LOGFILE"; then
+    echo "DVCA may have failed. Check log: $LOGFILE" | tee -a $LOGFILE
+    exit 1
+fi
+
+# === Step 5: Final DV status check using log ===
+echo "Verifying that Database Vault is now enabled..." | tee -a $LOGFILE
+
+sqlplus -s / as sysdba >> $LOGFILE <<EOF
+SET PAGES 0 FEEDBACK OFF
+SELECT 'DV_FINAL_STATUS=' || VALUE FROM V\$OPTION WHERE PARAMETER = 'Oracle Database Vault';
+EXIT;
+EOF
+
+if grep -q "DV_FINAL_STATUS=TRUE" "$LOGFILE"; then
+    echo "✅ Database Vault is successfully enabled." | tee -a $LOGFILE
+else
+    echo "❌ Database Vault enablement failed. Check log." | tee -a $LOGFILE
+    exit 1
+fi
+
+# === Step 6: Restart DB using srvctl ===
+echo "Restarting database using srvctl..." | tee -a $LOGFILE
+
+srvctl stop database -d $DB_UNIQUE_NAME >> $LOGFILE 2>&1
+if [ $? -ne 0 ]; then
+    echo "❌ Failed to stop database with srvctl." | tee -a $LOGFILE
+    exit 1
+fi
+
+srvctl start database -d $DB_UNIQUE_NAME >> $LOGFILE 2>&1
+if [ $? -eq 0 ]; then
+    echo "🎉 Oracle Database Vault Enablement and restart complete." | tee -a $LOGFILE
+else
+    echo "❌ Failed to start database with srvctl." | tee -a $LOGFILE
+    exit 1
+fi
